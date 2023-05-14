@@ -1,0 +1,2 @@
+aarch64-none-linux-gnu-gcc -O0 -g   -c writer.c
+aarch64-none-linux-gnu-gcc  -O0 -g   -o writer writer.o
