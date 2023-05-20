@@ -1,5 +1,11 @@
 #include "systemcalls.h"
 
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
 /**
  * @param cmd the command to execute with system()
  * @return true if the command in @param cmd was executed
@@ -9,14 +15,20 @@
 */
 bool do_system(const char *cmd)
 {
+    const int status = system(cmd);
 
-/*
- * TODO  add your code here
- *  Call the system() function with the command set in the cmd
- *   and return a boolean true if the system() call completed with success
- *   or false() if it returned a failure
-*/
-
+    if (cmd == NULL && status == 0) {
+        // No shell is available.
+        return false;
+    } else if (status == -1) {
+        // Child could not be created, or status could not be retrieved.
+        // const int err = errno;
+        return false;
+    } else if (status == 127) {
+        // Shell could not be executed in the child process.
+        return false;
+    }
+   
     return true;
 }
 
@@ -43,25 +55,36 @@ bool do_exec(int count, ...)
     for(i=0; i<count; i++)
     {
         command[i] = va_arg(args, char *);
+        printf("%s\n", command[i]);
     }
     command[count] = NULL;
-    // this line is to avoid a compile warning before your implementation is complete
-    // and may be removed
-    command[count] = command[count];
-
-/*
- * TODO:
- *   Execute a system command by calling fork, execv(),
- *   and wait instead of system (see LSP page 161).
- *   Use the command[0] as the full path to the command to execute
- *   (first argument to execv), and use the remaining arguments
- *   as second argument to the execv() command.
- *
-*/
-
     va_end(args);
 
-    return true;
+    bool status = false;
+    const pid_t pid = fork();
+
+    if (pid == 0) {
+        // Child process.
+        if (execv(command[0], command) == -1) {
+            // Error in execv.
+            exit(EXIT_FAILURE);
+        }
+        exit(EXIT_SUCCESS);
+    } else if (pid == -1) {
+        // Failed to fork.
+        // const int err = errno;
+        status = false;
+    } else {
+        // Parent process.
+        int execv_result = 0;
+        const int terminated_pid = wait(&execv_result);
+        status = (terminated_pid == -1);
+        if (WIFEXITED(execv_result)) {
+            status = (WEXITSTATUS(execv_result) == EXIT_SUCCESS);
+        } else if (WIFSIGNALED(execv_result)) {
+        }
+    }
+    return status;
 }
 
 /**
@@ -80,20 +103,54 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
         command[i] = va_arg(args, char *);
     }
     command[count] = NULL;
-    // this line is to avoid a compile warning before your implementation is complete
-    // and may be removed
-    command[count] = command[count];
-
-
-/*
- * TODO
- *   Call execv, but first using https://stackoverflow.com/a/13784315/1446624 as a refernce,
- *   redirect standard out to a file specified by outputfile.
- *   The rest of the behaviour is same as do_exec()
- *
-*/
-
     va_end(args);
 
-    return true;
+    const int log = open(outputfile, O_WRONLY | O_CREAT);
+    if (log == -1) {
+        // Failed to open output file.
+        // const int err = errno;
+        return false;
+    }
+    bool status = false;
+    const pid_t pid = fork();
+
+    if (pid == 0) {
+        // Child process.
+        if (dup2(log, 1) == -1) {
+            // Error when redirecting output.
+            // const int err = errno;
+            exit(EXIT_FAILURE);
+        }
+        if (close(log) == -1) {
+            // Error when closing log file.
+            // const int err = errno;
+            ;
+        }
+        if (execv(command[0], command) == -1) {
+            // Error in execv.
+            exit(EXIT_FAILURE);
+        }
+        exit(EXIT_SUCCESS);
+    } else if (pid == -1) {
+        // Failed to fork.
+        // const int err = errno;
+        status = false;
+    } else {
+        // Parent process.
+        if (close(log) == -1) {
+            // Error when closing log file.
+            // const int err = errno;
+            ;
+        }
+        int execv_result = 0;
+        const int terminated_pid = wait(&execv_result);
+        status = (terminated_pid == -1);
+        if (WIFEXITED(execv_result)) {
+            status = (WEXITSTATUS(execv_result) == EXIT_SUCCESS);
+        } else if (WIFSIGNALED(execv_result)) {
+            status = false;
+        }
+    }
+
+    return status;
 }
