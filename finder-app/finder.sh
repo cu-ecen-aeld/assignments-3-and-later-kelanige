@@ -1,7 +1,7 @@
-#!/usr/bin/env bash
+#!/bin/sh
 
 if [[ "$#" -ne 2 ]]; then
-	echo "Useage: ./finder /path/to/search searchstr"
+	echo "Useage: finder.sh /path/to/search searchstr"
 	exit 1
 fi
 
@@ -16,4 +16,3 @@ fi
 printf "The number of files are %d and the number of matching lines are %d"  "$(grep -Rl $2 $1 | wc -l)" "$(grep -R $2 $1 | wc -l)"
 
 exit 0
-
