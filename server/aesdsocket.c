@@ -138,7 +138,8 @@ int main(int argc, char *argv[])
     }
 
     // Set socket options.
-    if (setsockopt(parameters.serv_fd, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int)) == -1) {
+    if (setsockopt(parameters.serv_fd, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int)) == -1)
+    {
         perror("Call to setsockopt failed");
         exit(-1);
     }
@@ -155,8 +156,10 @@ int main(int argc, char *argv[])
     }
 
     // Check for daemon mode.
-    if (argc > 1 && strcmp(argv[1], "-d") == 0) {
-        if (daemon(0, 0) == -1) {
+    if (argc > 1 && strcmp(argv[1], "-d") == 0)
+    {
+        if (daemon(0, 0) == -1)
+        {
             perror("Call to daemon failed");
             exit(-1);
         }
@@ -197,6 +200,7 @@ int main(int argc, char *argv[])
         // Read data.
         char chunk[MAX_CHUNK];
         int bytes = 0;
+        int total_bytes = 0;
         while ((bytes = recv(parameters.peer_fd, chunk, MAX_CHUNK - 1, 0)) > 0)
         {
             chunk[bytes] = '\0';
@@ -205,6 +209,7 @@ int main(int argc, char *argv[])
             if (parameters.output_fd != NULL)
             {
                 fputs(chunk, parameters.output_fd);
+                total_bytes += bytes;
             }
 
             // Break if newline was found.
@@ -213,17 +218,38 @@ int main(int argc, char *argv[])
                 break;
             }
         }
+        if (fclose(parameters.output_fd) == EOF)
+        {
+            perror("Call to close file failed");
+            exit(-1);
+        }
+        parameters.output_fd = 0;
+
+        // Zero buffer for reuse.
+        memset(chunk, 0, sizeof(char) * MAX_CHUNK);
+
+        // Open file in read mode.
+        parameters.output_fd = fopen("/var/tmp/aesdsocketdata", "r");
+        if (parameters.output_fd == NULL)
+        {
+            perror("Failed to open data file in read mode");
+            exit(-1);
+        }
 
         // Echo back data.
-        fseek(parameters.output_fd, 0, SEEK_SET);
-        char c = 0x00;
-        while ((c = fgetc(parameters.output_fd)) != EOF)
+        while (fgets(chunk, MAX_CHUNK, parameters.output_fd) != NULL)
         {
-            if (send(parameters.peer_fd, &c, 1, 0) == -1)
+            char *end = strrchr(chunk, '\0');
+            if (end == NULL)
+            {
+                break;
+            }
+            if (send(parameters.peer_fd, chunk, (size_t)(end - chunk), 0) == -1)
             {
                 perror("Call to send failed");
                 break;
             }
+            memset(chunk, 0, sizeof(char) * MAX_CHUNK);
         }
 
         // Close output file.
