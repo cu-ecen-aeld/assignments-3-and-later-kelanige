@@ -20,7 +20,7 @@ clean:
 	-rm -f aesdsocket
 
 aesdsocket: aesdsocket.o
-	$(CROSS_COMPILE)$(CC) $(LDFLAGS) $(CFLAGS) -o $@ $@.o
+	$(CROSS_COMPILE)$(CC) $(LDFLAGS) $(CFLAGS) -o $@ $@.o -lpthread
 
 .c.o:
 	$(CROSS_COMPILE)$(CC) $(CFLAGS) -c $<
