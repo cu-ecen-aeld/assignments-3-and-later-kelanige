@@ -78,7 +78,6 @@ void *handle_connection(void *arg)
 {
     struct Node *parameters = (struct Node *)arg;
     const int MAX_CHUNK = 1024;
-    printf("handling_connection...\n");
     // Read data.
     char chunk[MAX_CHUNK];
     int bytes = 0;
@@ -152,12 +151,41 @@ void *handle_connection(void *arg)
     pthread_exit(arg);
 }
 
+void *log_timestamp(void* arg) {
+    struct Node* parameters = (struct Node *)arg;
+    const int MAX_SIZE = 1024;
+    const struct timespec required = {10, 0};
+    char wall_time[MAX_SIZE];
+    strcpy(wall_time, "timestamp:");
+    while (parameters->exit == 0) {
+        // Sleep for 10 seconds.
+        if (nanosleep(&required, NULL) != 0) {
+            perror("Call to nanosleep failed");
+            exit(-1);
+        }
+        // Get current time.
+        time_t t = time(NULL);
+        struct tm* current_time = localtime(&t);
+        // Log time.
+        strftime(wall_time + 10, MAX_SIZE, "%F %T", current_time);
+        strcat(wall_time, "\n");
+        // Acquire mutex.
+        pthread_mutex_lock(parameters->mutex);
+        // Write to log file.
+        fputs(wall_time, parameters->log);
+        // Release mutex.
+        pthread_mutex_unlock(parameters->mutex);
+    }
+    parameters->complete = 1;
+    pthread_exit(arg);
+}
+
 void join_completed_threads(int req_exit)
 {
     struct Node *current, *tmp;
     SLIST_FOREACH_SAFE(current, &thread_list, next, tmp)
     {
-        current->exit = 1;
+        current->exit = req_exit;
         if (current->complete == 1)
         {
             pthread_join(current->thread, NULL);
@@ -310,6 +338,13 @@ int main(int argc, char *argv[])
         exit(-1);
     }
     pthread_mutex_t log_mutex;
+
+    // Spawn timestamp thread.
+    struct Node *timer_node = insert_node(&thread_list);
+    timer_node->log = parameters.output_fd;
+    timer_node->mutex = &log_mutex;
+    timer_node->exit = 0;
+    pthread_create(&timer_node->thread, NULL, log_timestamp, (void *)timer_node);
 
     while (parameters.run)
     {
