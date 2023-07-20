@@ -18,8 +18,6 @@ struct Parameters
     int run;
     FILE *output_fd;
     int serv_fd;
-    int peer_fd;
-    pid_t pid;
 };
 
 struct Parameters parameters;
@@ -33,7 +31,7 @@ struct Node
     pthread_mutex_t *mutex;
     int peer;
     int complete;
-    int exit;
+    int *run;
 };
 
 SLIST_HEAD(NodeHead, Node);
@@ -44,19 +42,7 @@ struct Node *insert_node(struct NodeHead *head)
 {
     struct Node *new_node = malloc(sizeof(struct Node));
     memset(new_node, 0, sizeof(struct Node));
-    if (SLIST_EMPTY(head))
-    {
-        SLIST_INSERT_HEAD(head, new_node, next);
-    }
-    else
-    {
-        struct Node *current = SLIST_FIRST(head);
-        while (SLIST_NEXT(current, next) != NULL)
-        {
-            current = SLIST_NEXT(current, next);
-        }
-        SLIST_INSERT_AFTER(current, new_node, next);
-    }
+    SLIST_INSERT_HEAD(head, new_node, next);
     return new_node;
 }
 
@@ -64,6 +50,7 @@ int init()
 {
     // Zero memory.
     memset(&parameters, 0, sizeof(struct Parameters));
+    memset(&thread_list, 0, sizeof(struct NodeHead));
 
     // Open syslog.
     openlog(NULL, LOG_CONS | LOG_PERROR, LOG_USER);
@@ -80,18 +67,17 @@ void *handle_connection(void *arg)
     const int MAX_CHUNK = 1024;
     // Read data.
     char chunk[MAX_CHUNK];
+    memset(chunk, 0, MAX_CHUNK);
     int bytes = 0;
-    while (parameters->exit == 0 && (bytes = recv(parameters->peer, chunk, MAX_CHUNK - 1, 0)) > 0)
+    while (*parameters->run == 1 && (bytes = recv(parameters->peer, chunk, MAX_CHUNK - 1, 0)) > 0)
     {
-        chunk[bytes] = '\0';
-
         // Acquire mutex.
         pthread_mutex_lock(parameters->mutex);
 
         // Write line to output file.
         if (parameters->log != NULL)
         {
-            fputs(chunk, parameters->log);
+            fprintf(parameters->log, "%s", chunk);
         }
 
         // Release mutex.
@@ -102,99 +88,83 @@ void *handle_connection(void *arg)
         {
             break;
         }
+        memset(chunk, 0, MAX_CHUNK);
     }
 
-    // Zero buffer for reuse.
-    memset(chunk, 0, sizeof(char) * MAX_CHUNK);
-
-    // Save file position.
-    const long int output_position = ftell(parameters->log);
-    if (output_position == -1)
+    if (*parameters->run == 1)
     {
-        perror("Failed to get file position");
-        exit(-1);
-    }
-
-    // Acquire mutex.
-    pthread_mutex_lock(parameters->mutex);
-
-    // Seek to beginning of file.
-    if (fseek(parameters->log, 0, SEEK_SET) != 0)
-    {
-        perror("Failed to seek to beginning of log file");
-        exit(-1);
-    }
-
-    // Echo back data.
-    while (parameters->exit == 0 && fgets(chunk, MAX_CHUNK, parameters->log) != NULL)
-    {
-        char *end = strrchr(chunk, '\0');
-        if (end == NULL)
+        // Acquire mutex.
+        pthread_mutex_lock(parameters->mutex);
+        // Seek to beginning of file.
+        if (fseek(parameters->log, 0, SEEK_SET) != 0)
         {
-            break;
+            perror("Failed to seek to beginning of file");
         }
-        if (send(parameters->peer, chunk, (size_t)(end - chunk), 0) == -1)
+        // Echo back data.
+        size_t bytes_read = 0;
+        while (*parameters->run == 1 && (bytes_read = fread(chunk, sizeof(char), MAX_CHUNK, parameters->log)) != 0)
         {
-            perror("Call to send failed");
-            break;
+            if (send(parameters->peer, chunk, bytes_read, 0) != bytes_read)
+            {
+                perror("Call to send failed");
+            }
+            memset(chunk, 0, MAX_CHUNK);
         }
-        memset(chunk, 0, sizeof(char) * MAX_CHUNK);
+        // Release mutex.
+        pthread_mutex_unlock(parameters->mutex);
     }
-
-    // Release mutex.
-    pthread_mutex_unlock(parameters->mutex);
-
     // Set completed.
     parameters->complete = 1;
-
     // Exit thread.
     pthread_exit(arg);
 }
 
-void *log_timestamp(void* arg) {
-    struct Node* parameters = (struct Node *)arg;
+void *log_timestamp(void *arg)
+{
+    struct Node *parameters = (struct Node *)arg;
     const int MAX_SIZE = 1024;
-    const struct timespec required = {10, 0};
-    char wall_time[MAX_SIZE];
-    strcpy(wall_time, "timestamp:");
-    while (parameters->exit == 0) {
-        // Sleep for 10 seconds.
-        if (nanosleep(&required, NULL) != 0) {
-            perror("Call to nanosleep failed");
-            exit(-1);
-        }
+    time_t last_log_time = time(NULL);
+    while (*parameters->run == 1)
+    {
         // Get current time.
-        time_t t = time(NULL);
-        struct tm* current_time = localtime(&t);
-        // Log time.
-        strftime(wall_time + 10, MAX_SIZE, "%F %T", current_time);
-        strcat(wall_time, "\n");
-        // Acquire mutex.
-        pthread_mutex_lock(parameters->mutex);
-        // Write to log file.
-        fputs(wall_time, parameters->log);
-        // Release mutex.
-        pthread_mutex_unlock(parameters->mutex);
+        const time_t now = time(NULL);
+        // Check to see if 10 seconds have elapsed since last log.
+        if (now - last_log_time > 9)
+        {
+            char wall_time[MAX_SIZE];
+            char tmp[MAX_SIZE];
+            memset(wall_time, 0, MAX_SIZE);
+            memset(tmp, 0, MAX_SIZE);
+            strcat(wall_time, "timestamp:");
+            // Log time.
+            struct tm *current_time = localtime(&now);
+            strftime(tmp, MAX_SIZE, "%F %T", current_time);
+            strcat(wall_time, tmp);
+            strcat(wall_time, "\0");
+            // Acquire mutex.
+            pthread_mutex_lock(parameters->mutex);
+            // Write to log file.
+            fprintf(parameters->log, "%s\n", wall_time);
+            // Release mutex.
+            pthread_mutex_unlock(parameters->mutex);
+            // Update last log time.
+            last_log_time = now;
+        }
     }
+    // Set completed.
     parameters->complete = 1;
+    // Exit thread.
     pthread_exit(arg);
 }
 
-void join_completed_threads(int req_exit)
+void join_completed_threads(int force_exit)
 {
     struct Node *current, *tmp;
     SLIST_FOREACH_SAFE(current, &thread_list, next, tmp)
     {
-        current->exit = req_exit;
-        if (current->complete == 1)
+        if (current->complete == 1 || force_exit == 1)
         {
             pthread_join(current->thread, NULL);
-            // Close peer connection.
-            if (close(current->peer) == -1)
-            {
-                perror("Call to close peer socket failed");
-                exit(-1);
-            }
             SLIST_REMOVE(&thread_list, current, Node, next);
             free(current);
         }
@@ -205,50 +175,31 @@ int cleanup()
 {
     // Set stop.
     parameters.run = 0;
-
     // Shutdown peer sockets.
     do
     {
         join_completed_threads(1);
     } while (!SLIST_EMPTY(&thread_list));
-    
+
     // Shutdown server socket.
-    if (parameters.serv_fd != 0)
+    if (shutdown(parameters.serv_fd, SHUT_RDWR) == -1)
     {
-        if (shutdown(parameters.serv_fd, SHUT_RDWR) == -1)
-        {
-            perror("Call to shutdown failed");
-        }
+        perror("Call to shutdown failed");
     }
 
     // Close server socket.
-    if (parameters.serv_fd != 0)
+    if (close(parameters.serv_fd) == -1)
     {
-        if (close(parameters.serv_fd) == -1)
-        {
-            perror("Call to close failed");
-        }
-        parameters.serv_fd = 0;
+        perror("Call to close failed");
     }
+    parameters.serv_fd = 0;
 
     // Close output file.
-    if (parameters.output_fd != NULL)
+    if (fclose(parameters.output_fd) == EOF)
     {
-        if (fclose(parameters.output_fd) == EOF)
-        {
-            perror("Failed to close output file");
-        }
-        parameters.output_fd = NULL;
+        perror("Failed to close output file");
     }
-
-    // Delete /var/tmp/aesdsocketdata.
-    if (access("/var/tmp/aesdsocketdata", F_OK) == 0)
-    {
-        if (remove("/var/tmp/aesdsocketdata") == -1)
-        {
-            perror("Call to remove failed");
-        }
-    }
+    parameters.output_fd = NULL;
 
     // Close syslog.
     closelog();
@@ -263,7 +214,7 @@ void sigint_handler(int signum)
 
 int main(int argc, char *argv[])
 {
-    const int MAX_CONNECTIONS = 5;
+    const int MAX_CONNECTIONS = 10;
 
     // Register signal handlers.
     struct sigaction handler;
@@ -272,12 +223,12 @@ int main(int argc, char *argv[])
     handler.sa_flags = 0;
     if (sigaction(SIGINT, &handler, NULL) == -1)
     {
-        perror("Call to sigaction failed");
+        perror("Call to sigaction failed for SIGINT");
         exit(-1);
     }
     if (sigaction(SIGTERM, &handler, NULL) == -1)
     {
-        perror("Call to sigaction failed");
+        perror("Call to sigaction failed for SIGTERM");
         exit(-1);
     }
 
@@ -331,19 +282,22 @@ int main(int argc, char *argv[])
     }
 
     // Open output file.
-    parameters.output_fd = fopen("/var/tmp/aesdsocketdata", "a+");
+    parameters.output_fd = fopen("/var/tmp/aesdsocketdata", "w+");
     if (parameters.output_fd == NULL)
     {
         perror("Failed to open output file");
         exit(-1);
     }
-    pthread_mutex_t log_mutex;
+
+    // Initialize mutex.
+    pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
 
     // Spawn timestamp thread.
     struct Node *timer_node = insert_node(&thread_list);
     timer_node->log = parameters.output_fd;
     timer_node->mutex = &log_mutex;
-    timer_node->exit = 0;
+    timer_node->complete = 0;
+    timer_node->run = &parameters.run;
     pthread_create(&timer_node->thread, NULL, log_timestamp, (void *)timer_node);
 
     while (parameters.run)
@@ -355,25 +309,25 @@ int main(int argc, char *argv[])
         if (peer == -1)
         {
             perror("Call to accept failed");
-            exit(-1);
         }
         char peer_ip[INET_ADDRSTRLEN];
         if (inet_ntop(AF_INET, &(peer_addr.sin_addr), peer_ip, INET_ADDRSTRLEN) == NULL)
         {
             perror("Call to inet_ntop failed");
-            exit(-1);
         }
-        syslog(LOG_INFO, "Acceped connection from %s", peer_ip);
-        struct Node *node = insert_node(&thread_list);
-        node->log = parameters.output_fd;
-        node->mutex = &log_mutex;
-        node->peer = peer;
-        node->complete = 0;
-        node->exit = 0;
-        pthread_create(&node->thread, NULL, handle_connection, (void *)node);
+        if (parameters.run)
+        {
+            syslog(LOG_INFO, "Acceped connection from %s", peer_ip);
+            struct Node *node = insert_node(&thread_list);
+            node->log = parameters.output_fd;
+            node->mutex = &log_mutex;
+            node->peer = peer;
+            node->complete = 0;
+            node->run = &parameters.run;
+            pthread_create(&node->thread, NULL, handle_connection, (void *)node);
+        }
         join_completed_threads(0);
     }
 
-    cleanup();
     exit(EXIT_SUCCESS);
 }
