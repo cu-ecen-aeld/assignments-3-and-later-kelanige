@@ -116,7 +116,7 @@ void *handle_connection(void *arg)
     // Set completed.
     parameters->complete = 1;
     // Exit thread.
-    pthread_exit(arg);
+    return NULL;
 }
 
 void *log_timestamp(void *arg)
@@ -154,7 +154,7 @@ void *log_timestamp(void *arg)
     // Set completed.
     parameters->complete = 1;
     // Exit thread.
-    pthread_exit(arg);
+    return NULL;
 }
 
 void join_completed_threads(int force_exit)
