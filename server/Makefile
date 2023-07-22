@@ -1,9 +1,10 @@
 INCLUDE_DIRS =
 LIB_DIRS =
-CC = gcc
+CC? = gcc
 
 CDEFS =
-CFLAGS = -O0 -Wall -Werror -g $(INCLUDE_DIRS) $(CDEFS)
+CFLAGS? = -O0 -Wall -Werror -g $(INCLUDE_DIRS) $(CDEFS)
+LDFLAGS? = -lpthread
 LIBS =
 
 HFILES =
@@ -20,7 +21,7 @@ clean:
 	-rm -f aesdsocket
 
 aesdsocket: aesdsocket.o
-	$(CROSS_COMPILE)$(CC) $(LDFLAGS) $(CFLAGS) -o $@ $@.o -lpthread
+	$(CROSS_COMPILE)$(CC) $(LDFLAGS) $(CFLAGS) -o $@ $@.o $(LDFLAGS)
 
 .c.o:
 	$(CROSS_COMPILE)$(CC) $(CFLAGS) -c $<
