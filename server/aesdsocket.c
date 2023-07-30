@@ -13,6 +13,10 @@
 
 #include "queue.h"
 
+#ifndef USE_AESD_CHAR_DEVICE
+    #define USE_AESD_CHAR_DEVICE 1
+#endif
+
 struct Parameters
 {
     int run;
@@ -282,7 +286,11 @@ int main(int argc, char *argv[])
     }
 
     // Open output file.
+#if USE_AESD_CHAR_DEVICE
+    parameters.output_fd = fopen("/dev/aesdchar", "w+");
+#else
     parameters.output_fd = fopen("/var/tmp/aesdsocketdata", "w+");
+#endif
     if (parameters.output_fd == NULL)
     {
         perror("Failed to open output file");
@@ -292,6 +300,8 @@ int main(int argc, char *argv[])
     // Initialize mutex.
     pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+#if USE_AESD_CHAR_DEVICE
+#else
     // Spawn timestamp thread.
     struct Node *timer_node = insert_node(&thread_list);
     timer_node->log = parameters.output_fd;
@@ -299,6 +309,7 @@ int main(int argc, char *argv[])
     timer_node->complete = 0;
     timer_node->run = &parameters.run;
     pthread_create(&timer_node->thread, NULL, log_timestamp, (void *)timer_node);
+#endif
 
     while (parameters.run)
     {
