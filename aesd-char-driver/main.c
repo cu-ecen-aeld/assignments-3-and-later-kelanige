@@ -35,9 +35,6 @@ struct aesd_dev aesd_device;
 int aesd_open(struct inode *inode, struct file *filp)
 {
     PDEBUG("open");
-    /**
-     * TODO: handle open
-     */
     filp->private_data = container_of(inode->i_cdev, struct aesd_dev, cdev);
     return 0;
 }
@@ -56,9 +53,6 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
     size_t remaining_bytes = 0;
     struct aesd_buffer_entry* entry = NULL;
     PDEBUG("read %zu bytes with offset %lld",count,*f_pos);
-    /**
-     * TODO: handle read
-     */
     if (mutex_lock_interruptible(&aesd_device.buffer_mutex)) {
         mutex_unlock(&aesd_device.buffer_mutex);
         return -ERESTARTSYS;
@@ -85,26 +79,19 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
     char* user_buf = NULL;
     int has_newline = 0;
     PDEBUG("write %zu bytes with offset %lld",count,*f_pos);
-    /**
-     * TODO: handle write
-     */
     // Copy user buffer to kernel memory.
     user_buf = kmalloc(count, GFP_KERNEL);
     if (copy_from_user(user_buf, buf, count)) {
         kfree(user_buf);
         return -EFAULT;
     }
-    //if (mutex_lock_interruptible(&aesd_device.string_mutex)) {
     if (mutex_lock_interruptible(&aesd_device.buffer_mutex)) {
         kfree(user_buf);
-        // mutex_unlock(&aesd_device.string_mutex);
         mutex_unlock(&aesd_device.buffer_mutex);
         return -ERESTARTSYS;
     }
 
     has_newline = (strchr(user_buf, '\n') != NULL);
-
-    // string_mutex lock held.
     if (aesd_device.string == NULL) {
         aesd_device.string = kmalloc(BUFFER_SIZE, GFP_KERNEL);
         memset(aesd_device.string, 0, BUFFER_SIZE);
@@ -112,10 +99,11 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
         aesd_device.string_capacity = BUFFER_SIZE;
     }
     if (aesd_device.string_size + count > aesd_device.string_capacity) {
-        aesd_device.string = krealloc(aesd_device.string, 2 * aesd_device.string_capacity, GFP_KERNEL);
-        aesd_device.string_capacity = 2 * aesd_device.string_capacity;
+        const size_t new_size = 2 * aesd_device.string_capacity;
+        aesd_device.string = krealloc(aesd_device.string, new_size, GFP_KERNEL);
+        aesd_device.string_capacity = new_size;
     }
-    strcat(&aesd_device.string[aesd_device.string_size], user_buf);
+    memcpy(&aesd_device.string[aesd_device.string_size], user_buf, count);
     aesd_device.string_size += count;
 
     if (has_newline == 1) {
@@ -126,12 +114,6 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
         aesd_device.string = NULL;
         aesd_device.string_size = 0;
         aesd_device.string_capacity = 0;
-        if (mutex_lock_interruptible(&aesd_device.buffer_mutex)) {
-            kfree(user_buf);
-            // mutex_unlock(&aesd_device.string_mutex);
-            mutex_unlock(&aesd_device.buffer_mutex);
-            return -ERESTARTSYS;
-        }
         *f_pos += entry.size;
         if (aesd_device.buffer.full) {
             size_t offset;
@@ -141,7 +123,6 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
         aesd_circular_buffer_add_entry(&aesd_device.buffer, entry);
     }
     mutex_unlock(&aesd_device.buffer_mutex);
-    // mutex_unlock(&aesd_device.string_mutex);
     return retval;
 }
 
@@ -182,10 +163,6 @@ int aesd_init_module(void)
     }
     memset(&aesd_device,0,sizeof(struct aesd_dev));
 
-    /**
-     * TODO: initialize the AESD specific portion of the device
-     */
-    // mutex_init(&aesd_device.string_mutex);
     aesd_device.string = NULL;
     aesd_device.string_size = 0;
     aesd_device.string_capacity = 0;
@@ -207,9 +184,6 @@ void aesd_cleanup_module(void)
 
     cdev_del(&aesd_device.cdev);
 
-    /**
-     * TODO: cleanup AESD specific poritions here as necessary
-     */
     if (!mutex_lock_interruptible(&aesd_device.buffer_mutex)) {
         size_t index;
         struct aesd_buffer_entry* entry;
@@ -219,16 +193,13 @@ void aesd_cleanup_module(void)
     }
     mutex_unlock(&aesd_device.buffer_mutex);
 
-    // if (!mutex_lock_interruptible(&aesd_device.string_mutex)) {
     if (!mutex_lock_interruptible(&aesd_device.buffer_mutex)) {
         if (aesd_device.string != NULL) {
             kfree(aesd_device.string);
         }
     }
-    // mutex_unlock(&aesd_device.string_mutex);
     mutex_unlock(&aesd_device.buffer_mutex);
 
-    // mutex_destroy(&aesd_device.string_mutex);
     mutex_destroy(&aesd_device.buffer_mutex);
 
     unregister_chrdev_region(devno, 1);
