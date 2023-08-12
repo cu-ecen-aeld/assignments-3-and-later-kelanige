@@ -12,6 +12,7 @@
 #include <unistd.h>
 
 #include "queue.h"
+#include "../aesd-char-driver/aesd_ioctl.h"
 
 #ifndef USE_AESD_CHAR_DEVICE
 #define USE_AESD_CHAR_DEVICE 1
@@ -72,25 +73,28 @@ int init()
 void *handle_connection(void *arg)
 {
     struct Node *parameters = (struct Node *)arg;
-    const int MAX_CHUNK = 1024;
+    const size_t MAX_CHUNK = 1024;
+    const size_t TAG_SIZE = 19;
+    char SEEKTO_TAG[19] = "AESDCHAR_IOCSEEKTO:";
     // Read data.
+    size_t buffer_size = MAX_CHUNK;
+    size_t buffer_offset = 0;
     char chunk[MAX_CHUNK];
+    char* buffer = (char *)malloc(buffer_size);
+    size_t char_idx;
+    int seekto_tag_found = 1;
     memset(chunk, 0, MAX_CHUNK);
+    memset(buffer, 0, buffer_size);
     int bytes = 0;
     FILE* log = fopen(filename, "a+");
     while (*parameters->run == 1 && (bytes = recv(parameters->peer, chunk, MAX_CHUNK - 1, 0)) > 0)
     {
-        // Acquire mutex.
-        pthread_mutex_lock(parameters->mutex);
-
-        // Write line to output file.
-        if (log != NULL)
-        {
-            fprintf(log, "%s", chunk);
+        if (buffer_offset + bytes > buffer_size) {
+            const size_t new_size = 2 * buffer_size;
+            buffer = realloc(buffer, new_size);
+            buffer_size = new_size;
         }
-
-        // Release mutex.
-        pthread_mutex_unlock(parameters->mutex);
+        memcpy(buffer + buffer_offset, chunk, bytes);
 
         // Break if newline was found.
         if (strpbrk(chunk, "\n") != NULL)
@@ -100,27 +104,67 @@ void *handle_connection(void *arg)
         memset(chunk, 0, MAX_CHUNK);
     }
 
-    if (*parameters->run == 1)
-    {
-        // Acquire mutex.
-        pthread_mutex_lock(parameters->mutex);
-        // Seek to beginning of file.
-        if (fseek(log, 0, SEEK_SET) != 0)
-        {
-            perror("Failed to seek to beginning of file");
+    for (char_idx = 0; char_idx < TAG_SIZE; ++char_idx) {
+        if (buffer[char_idx] != SEEKTO_TAG[char_idx]) {
+            seekto_tag_found = 0;
+            break;
         }
-        // Echo back data.
-        size_t bytes_read = 0;
-        while (*parameters->run == 1 && (bytes_read = fread(chunk, sizeof(char), MAX_CHUNK, log)) != 0)
-        {
-            if (send(parameters->peer, chunk, bytes_read, 0) != bytes_read)
-            {
-                perror("Call to send failed");
+    }
+    if (seekto_tag_found == 1) {
+        const char delimiter[1] = ",";
+        const uint32_t write_cmd = atoi(strtok(&buffer[TAG_SIZE], delimiter));
+        const uint32_t write_cmd_offset = atoi(strtok(NULL, delimiter));
+        syslog(LOG_WARNING, "%u, %u", write_cmd, write_cmd_offset);
+        struct aesd_seekto seekto = {.write_cmd = write_cmd, .write_cmd_offset = write_cmd_offset};
+        if (log != NULL) {
+            int fd = fileno(log);
+            size_t bytes_read = 0;
+            if (fd == -1) {
+                perror("fileno");
             }
-            memset(chunk, 0, MAX_CHUNK);
+            pthread_mutex_lock(parameters->mutex);
+            if (ioctl(fd, AESDCHAR_IOCSEEKTO, &seekto)) {
+                perror("ioctl");
+            }
+            while (*parameters->run == 1 && (bytes_read = fread(chunk, sizeof(char), MAX_CHUNK, log)) != 0) {
+                if (send(parameters->peer, chunk, bytes_read, 0) != bytes_read) {
+                    perror("Call to send failed");
+                }
+                memset(chunk, 0, MAX_CHUNK);
+            }
+            pthread_mutex_unlock(parameters->mutex);
+        }
+    } else {
+        // Write line to output file.
+        if (log != NULL)
+        {
+            fprintf(log, "%s", buffer);
         }
         // Release mutex.
-        pthread_mutex_unlock(parameters->mutex);
+        // pthread_mutex_unlock(parameters->mutex);
+
+        if (*parameters->run == 1)
+        {
+            // Acquire mutex.
+            pthread_mutex_lock(parameters->mutex);
+            // Seek to beginning of file.
+            if (fseek(log, 0, SEEK_SET) != 0)
+            {
+                perror("Failed to seek to beginning of file");
+            }
+            // Echo back data.
+            size_t bytes_read = 0;
+            while (*parameters->run == 1 && (bytes_read = fread(chunk, sizeof(char), MAX_CHUNK, log)) != 0)
+            {
+                if (send(parameters->peer, chunk, bytes_read, 0) != bytes_read)
+                {
+                    perror("Call to send failed");
+                }
+                memset(chunk, 0, MAX_CHUNK);
+            }
+            // Release mutex.
+            pthread_mutex_unlock(parameters->mutex);
+        }
     }
     fclose(log);
     // Set completed.
