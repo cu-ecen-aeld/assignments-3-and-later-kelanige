@@ -132,12 +132,31 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
     return retval;
 }
 
+loff_t aesd_llseek(struct file *filp, loff_t offset, int whence) {
+    loff_t retval = 0;
+    size_t total_size = 0;
+    size_t index = 0;
+    struct aesd_buffer_entry* entry;
+    PDEBUG("llseek %lld bytes, whence: %d", offset, whence);
+    if (mutex_lock_interruptible(&aesd_device.buffer_mutex)) {
+        mutex_unlock(&aesd_device.buffer_mutex);
+        return -ERESTARTSYS;
+    }
+    AESD_CIRCULAR_BUFFER_FOREACH(entry, &aesd_device.buffer, index) {
+        total_size += entry->size;
+    }
+    retval = fixed_size_llseek(filp, offset, whence, total_size);
+    mutex_unlock(&aesd_device.buffer_mutex);
+    return retval;
+}
+
 struct file_operations aesd_fops = {
     .owner =    THIS_MODULE,
     .read =     aesd_read,
     .write =    aesd_write,
     .open =     aesd_open,
     .release =  aesd_release,
+    .llseek =   aesd_llseek,
 };
 
 static int aesd_setup_cdev(struct aesd_dev *dev)
