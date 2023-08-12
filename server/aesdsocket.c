@@ -13,10 +13,19 @@
 
 #include "queue.h"
 
+#ifndef USE_AESD_CHAR_DEVICE
+#define USE_AESD_CHAR_DEVICE 1
+#endif
+
+#if USE_AESD_CHAR_DEVICE
+    const char* filename = "/dev/aesdchar";
+#else
+    const char* filename = "/var/tmp/aesdsocketdata";
+#endif
+
 struct Parameters
 {
     int run;
-    FILE *output_fd;
     int serv_fd;
 };
 
@@ -27,7 +36,6 @@ struct Node
     SLIST_ENTRY(Node)
     next;
     pthread_t thread;
-    FILE *log;
     pthread_mutex_t *mutex;
     int peer;
     int complete;
@@ -69,15 +77,16 @@ void *handle_connection(void *arg)
     char chunk[MAX_CHUNK];
     memset(chunk, 0, MAX_CHUNK);
     int bytes = 0;
+    FILE* log = fopen(filename, "a+");
     while (*parameters->run == 1 && (bytes = recv(parameters->peer, chunk, MAX_CHUNK - 1, 0)) > 0)
     {
         // Acquire mutex.
         pthread_mutex_lock(parameters->mutex);
 
         // Write line to output file.
-        if (parameters->log != NULL)
+        if (log != NULL)
         {
-            fprintf(parameters->log, "%s", chunk);
+            fprintf(log, "%s", chunk);
         }
 
         // Release mutex.
@@ -96,13 +105,13 @@ void *handle_connection(void *arg)
         // Acquire mutex.
         pthread_mutex_lock(parameters->mutex);
         // Seek to beginning of file.
-        if (fseek(parameters->log, 0, SEEK_SET) != 0)
+        if (fseek(log, 0, SEEK_SET) != 0)
         {
             perror("Failed to seek to beginning of file");
         }
         // Echo back data.
         size_t bytes_read = 0;
-        while (*parameters->run == 1 && (bytes_read = fread(chunk, sizeof(char), MAX_CHUNK, parameters->log)) != 0)
+        while (*parameters->run == 1 && (bytes_read = fread(chunk, sizeof(char), MAX_CHUNK, log)) != 0)
         {
             if (send(parameters->peer, chunk, bytes_read, 0) != bytes_read)
             {
@@ -113,6 +122,7 @@ void *handle_connection(void *arg)
         // Release mutex.
         pthread_mutex_unlock(parameters->mutex);
     }
+    fclose(log);
     // Set completed.
     parameters->complete = 1;
     // Exit thread.
@@ -124,6 +134,7 @@ void *log_timestamp(void *arg)
     struct Node *parameters = (struct Node *)arg;
     const int MAX_SIZE = 1024;
     time_t last_log_time = time(NULL);
+    FILE* log = fopen(filename, "a+");
     while (*parameters->run == 1)
     {
         // Get current time.
@@ -144,13 +155,14 @@ void *log_timestamp(void *arg)
             // Acquire mutex.
             pthread_mutex_lock(parameters->mutex);
             // Write to log file.
-            fprintf(parameters->log, "%s\n", wall_time);
+            fprintf(log, "%s\n", wall_time);
             // Release mutex.
             pthread_mutex_unlock(parameters->mutex);
             // Update last log time.
             last_log_time = now;
         }
     }
+    fclose(log);
     // Set completed.
     parameters->complete = 1;
     // Exit thread.
@@ -194,12 +206,12 @@ int cleanup()
     }
     parameters.serv_fd = 0;
 
-    // Close output file.
-    if (fclose(parameters.output_fd) == EOF)
-    {
-        perror("Failed to close output file");
+#if USE_AESD_CHAR_DEVICE
+#else
+    if (remove(filename) != 0) {
+        perror("Failed to remove output file");
     }
-    parameters.output_fd = NULL;
+#endif
 
     // Close syslog.
     closelog();
@@ -281,24 +293,18 @@ int main(int argc, char *argv[])
         exit(-1);
     }
 
-    // Open output file.
-    parameters.output_fd = fopen("/var/tmp/aesdsocketdata", "w+");
-    if (parameters.output_fd == NULL)
-    {
-        perror("Failed to open output file");
-        exit(-1);
-    }
-
     // Initialize mutex.
     pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+#if USE_AESD_CHAR_DEVICE
+#else
     // Spawn timestamp thread.
     struct Node *timer_node = insert_node(&thread_list);
-    timer_node->log = parameters.output_fd;
     timer_node->mutex = &log_mutex;
     timer_node->complete = 0;
     timer_node->run = &parameters.run;
     pthread_create(&timer_node->thread, NULL, log_timestamp, (void *)timer_node);
+#endif
 
     while (parameters.run)
     {
@@ -319,7 +325,6 @@ int main(int argc, char *argv[])
         {
             syslog(LOG_INFO, "Acceped connection from %s", peer_ip);
             struct Node *node = insert_node(&thread_list);
-            node->log = parameters.output_fd;
             node->mutex = &log_mutex;
             node->peer = peer;
             node->complete = 0;
