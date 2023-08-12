@@ -78,6 +78,7 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
     ssize_t retval = -ENOMEM;
     char* user_buf = NULL;
     int has_newline = 0;
+    size_t offset;
     PDEBUG("write %zu bytes with offset %lld",count,*f_pos);
     // Copy user buffer to kernel memory.
     user_buf = kmalloc(count, GFP_KERNEL);
@@ -91,7 +92,12 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
         return -ERESTARTSYS;
     }
 
-    has_newline = (strchr(user_buf, '\n') != NULL);
+    for (offset = 0; offset < count; ++offset) {
+        if (*(user_buf + offset) == '\n') {
+            has_newline = 1;
+            break;
+        }
+    }
     if (aesd_device.string == NULL) {
         aesd_device.string = kmalloc(BUFFER_SIZE, GFP_KERNEL);
         memset(aesd_device.string, 0, BUFFER_SIZE);
